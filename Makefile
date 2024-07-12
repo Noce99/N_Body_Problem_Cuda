@@ -17,4 +17,4 @@ nbody.run: $(TargetC)
 	   $(NVCC) $(NVCCFLAG) $< -o $@
 
 clean:
-	rm -f *.c *.f *.mod *.ptx
+	rm -f *.c *.f *.mod *.ptx *.run
