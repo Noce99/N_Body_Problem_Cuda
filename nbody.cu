@@ -3,8 +3,8 @@
 #include <stdio.h>
 // #include <stdlib.h>
 // #include <omp.h>
-#include "timer.h" // Include the timer header
-#include <cuda_runtime.h>
+//#include "timer.h" // Include the timer header
+//#include <cuda_runtime.h>
 // #include "matric.h" // Include your custom matric.h header
 // #include <stdio.h>
 // #include <assert.h>
@@ -48,6 +48,7 @@ __global__ void bodyForce(Body *p, float dt, int n, float *Fx, float *Fy, float 
                     Fx[i] += dx * invDist3;
                     Fy[i] += dy * invDist3;
                     Fz[i] += dz * invDist3;
+                    //printf("stampa f: %d\n",Fx[i]);
                 }
             }
 
@@ -86,7 +87,7 @@ int main(int argc, char **argv) {
     if (argc > 1) nBodies = atoi(argv[1]);
 
     const float dt = 0.01f; // time step
-    const int nIters = 10;  // simulation iterations
+    const int nIters = 500;  // simulation iterations
 
     int bytes = nBodies * sizeof(Body);
     Body *p_h ; //= (Body *)malloc(bytes);
@@ -143,13 +144,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    double totalTime = 0.0;
+    float totalTime = 0.0;
     cudaMemcpy(p_d,p_h,bytes,cudaMemcpyHostToDevice);
+
+    cudaEvent_t start,stop;
+    float time;
 
 
     for (int iter = 1; iter <= nIters; iter++) {
-        StartTimer();
-
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start,0);
 
         bodyForce<<<number_of_blocks, threads_per_blocks>>>(p_d, dt, nBodies, Fx_d, Fy_d, Fz_d); // compute interbody forces
         cudaDeviceSynchronize();
@@ -157,16 +162,20 @@ int main(int argc, char **argv) {
         integration<<<number_of_blocks, threads_per_blocks>>>(nBodies,p_d,dt);
         cudaDeviceSynchronize();
 
-        const double tElapsed = GetTimer() / 1000.0;
+        cudaEventRecord(stop,0);
+        cudaEventSynchronize(stop);
         if (iter > 1) { // First iter is warm up
-            totalTime += tElapsed;
+            cudaEventElapsedTime(&time,start,stop);
+            totalTime += time/1000;
         }
-        printf("Iteration %d: %.3f seconds\n", iter, tElapsed);
+        //printf("Iteration %d: %.3f seconds\n", iter, time);
+        if (iter==nIters-1) printf("Final Iteration %d: %.3f seconds\n", totalTime);
     }
+
     cudaMemcpy(p_h,p_d,bytes,cudaMemcpyDeviceToHost);
-    cudaMemcpy(Fx_h,Fx_d,bytes,cudaMemcpyDeviceToHost);
-    cudaMemcpy(Fy_h,Fy_d,bytes,cudaMemcpyDeviceToHost);
-    cudaMemcpy(Fz_h,Fz_d,bytes,cudaMemcpyDeviceToHost);
+    cudaMemcpy(Fx_h,Fx_d,nBodies * sizeof(float),cudaMemcpyDeviceToHost);
+    cudaMemcpy(Fy_h,Fy_d,nBodies * sizeof(float),cudaMemcpyDeviceToHost);
+    cudaMemcpy(Fz_h,Fz_d,nBodies * sizeof(float),cudaMemcpyDeviceToHost);
     saveForcesToFile("forces.txt", nBodies, p_h, Fx_h, Fy_h, Fz_h);
 
     double avgTime = totalTime / (double)(nIters - 1);
@@ -187,6 +196,8 @@ int main(int argc, char **argv) {
     cudaFree(Fy_d);
     cudaFree(Fz_d);
 
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     return 0;
 }
