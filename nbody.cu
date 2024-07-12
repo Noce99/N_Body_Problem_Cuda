@@ -3,7 +3,8 @@
 #include <stdio.h>
 // #include <stdlib.h>
 // #include <omp.h>
-// #include "timer.h" // Include the timer header
+#include "timer.h" // Include the timer header
+#include <cuda_runtime.h>
 // #include "matric.h" // Include your custom matric.h header
 // #include <stdio.h>
 // #include <assert.h>
@@ -70,8 +71,17 @@ void saveForcesToFile(const char *filename, int nBodies, Body *p, float *Fx, flo
     fclose(file);
 }
 
+__global__ void integration(int n, Body* p_d, float dt){
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i<n){
+        p_d[i].x += p_d[i].vx * dt;
+        p_d[i].y += p_d[i].vy * dt;
+        p_d[i].z += p_d[i].vz * dt;
+    }
+}
+
 int main(int argc, char **argv) {
-    printf("aaaaaaaa");
+
     int nBodies = 30000;
     if (argc > 1) nBodies = atoi(argv[1]);
 
@@ -81,10 +91,12 @@ int main(int argc, char **argv) {
     int bytes = nBodies * sizeof(Body);
     Body *p_h ; //= (Body *)malloc(bytes);
     Body *p_d ; //= (Body *)malloc(bytes);
-    printf("aaaaaaaa");
+
+
+
     cudaMallocHost(&p_h,bytes);
     cudaMalloc(&p_d, bytes);
-    printf("aaaaaaaa");
+
     if (p_h == NULL || p_h == NULL) {
         fprintf(stderr, "Unable to allocate memory for bodies.\n");
         return 1;
@@ -112,15 +124,22 @@ int main(int argc, char **argv) {
 
     free(buf);
 
-    float *Fx = (float *)malloc(nBodies * sizeof(float));
-    float *Fy = (float *)malloc(nBodies * sizeof(float));
-    float *Fz = (float *)malloc(nBodies * sizeof(float));
-    if (Fx == NULL || Fy == NULL || Fz == NULL) {
+    // float *Fx = (float *)malloc(nBodies * sizeof(float));
+    // float *Fy = (float *)malloc(nBodies * sizeof(float));
+    // float *Fz = (float *)malloc(nBodies * sizeof(float));
+    float *Fx_h ;     float *Fx_d ;
+    float *Fy_h ;     float *Fy_d ;
+    float *Fz_h ;     float *Fz_d ;
+
+    cudaMallocHost(&Fx_h,nBodies * sizeof(float));   cudaMallocHost(&Fy_h,nBodies * sizeof(float));       cudaMallocHost(&Fz_h,nBodies * sizeof(float));
+    cudaMalloc(&Fx_d, nBodies * sizeof(float));      cudaMalloc(&Fy_d, nBodies * sizeof(float));          cudaMalloc(&Fz_d, nBodies * sizeof(float));
+
+    if (Fx_h == NULL || Fy_h == NULL || Fz_h == NULL) {
         fprintf(stderr, "Unable to allocate memory for force arrays.\n");
-        cudaFree(p_h);
-        if (Fx) free(Fx);
-        if (Fy) free(Fy);
-        if (Fz) free(Fz);
+        cudaFreeHost(p_h);
+        if (Fx_h) cudaFreeHost(Fx_h);
+        if (Fy_h) cudaFreeHost(Fy_h);
+        if (Fz_h) cudaFreeHost(Fz_h);
         return 1;
     }
 
@@ -132,13 +151,11 @@ int main(int argc, char **argv) {
         StartTimer();
 
 
-        bodyForce<<<number_of_blocks, threads_per_blocks>>>(p_d, dt, nBodies, Fx, Fy, Fz); // compute interbody forces
+        bodyForce<<<number_of_blocks, threads_per_blocks>>>(p_d, dt, nBodies, Fx_d, Fy_d, Fz_d); // compute interbody forces
+        cudaDeviceSynchronize();
 
-        for (int i = 0; i < nBodies; i++) { // integrate position
-            p_d[i].x += p_d[i].vx * dt;
-            p_d[i].y += p_d[i].vy * dt;
-            p_d[i].z += p_d[i].vz * dt;
-        }
+        integration<<<number_of_blocks, threads_per_blocks>>>(nBodies,p_d,dt);
+        cudaDeviceSynchronize();
 
         const double tElapsed = GetTimer() / 1000.0;
         if (iter > 1) { // First iter is warm up
@@ -147,7 +164,10 @@ int main(int argc, char **argv) {
         printf("Iteration %d: %.3f seconds\n", iter, tElapsed);
     }
     cudaMemcpy(p_h,p_d,bytes,cudaMemcpyDeviceToHost);
-    saveForcesToFile("forces.txt", nBodies, p_h, Fx, Fy, Fz);
+    cudaMemcpy(Fx_h,Fx_d,bytes,cudaMemcpyDeviceToHost);
+    cudaMemcpy(Fy_h,Fy_d,bytes,cudaMemcpyDeviceToHost);
+    cudaMemcpy(Fz_h,Fz_d,bytes,cudaMemcpyDeviceToHost);
+    saveForcesToFile("forces.txt", nBodies, p_h, Fx_h, Fy_h, Fz_h);
 
     double avgTime = totalTime / (double)(nIters - 1);
     double rate = (double)nBodies / avgTime;
@@ -158,9 +178,15 @@ int main(int argc, char **argv) {
 
     cudaFreeHost(p_h);
     cudaFree(p_d);
-    free(Fx);
-    free(Fy);
-    free(Fz);
+
+    cudaFreeHost(Fx_h);
+    cudaFreeHost(Fy_h);
+    cudaFreeHost(Fz_h);
+
+    cudaFree(Fx_d);
+    cudaFree(Fy_d);
+    cudaFree(Fz_d);
+
 
     return 0;
 }
